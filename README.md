@@ -7,7 +7,7 @@ Search variables, inspect their current values, edit them in-game, pin the ones 
 ## Features
 
 * Browse Store and Persistent variables, with search by name, value, or type
-* Numbers-only view by default, which keeps large games fast (switch to all types when needed)
+* Numbers and flags view by default, which keeps large games fast (cycle to numbers only or all types when needed)
 * Edit values in-game
 * Pins: keep a list of variables with notes, saved per game
 * Locks: keep a pinned value exactly at X, at least X, or at most X
@@ -66,19 +66,23 @@ Notes on editing:
 * Tuple items are read-only.
 * Values too large to edit as text (over 20,000 characters) are read-only.
 
-## Numbers Only and Deep Mode
+## Types and Deep Mode
 
-By default the Browse tab lists only `int` and `float` variables. Everything else is skipped while scanning, which is what makes it fast in games with a lot of variables. Boolean flags are not counted as numbers.
+The **Types** button cycles between three views of the Browse tab:
 
-Press **Types: Numbers** to switch to **Types: All** to see strings, lists, objects and booleans. This is slower in large games.
+* **Numbers**: `int` and `float` variables only
+* **Numbers + flags**: numbers plus `True`/`False` variables (the default)
+* **All**: everything, including strings, lists, and objects
 
-Fast mode shows top-level variables. Enable **Deep** to include values nested inside lists, dictionaries, tuples, and objects. Deep mode is bounded per variable so one large structure cannot stall the scan, and it is slower in larger games.
+Anything outside the chosen view is skipped while scanning, which is what keeps the browser fast in games with a lot of variables. All is the slowest view in large games.
 
-To start in All mode, change this line:
+To change the starting view, edit this line to `"numbers"`, `"flags"`, or `"all"`:
 
 ```python
-_VB_NUMBERS_ONLY_DEFAULT = False
+_VB_TYPES_DEFAULT = "flags"
 ```
+
+Fast mode shows top-level variables. Enable **Deep** to include values nested inside lists, dictionaries, tuples, and objects. Deep mode is bounded per variable so one large structure cannot stall the scan, and it is slower in larger games.
 
 ## Pins
 
@@ -120,7 +124,7 @@ The Browse tab can compare the current values against a baseline. **Compare to**
 * **Snapshot**: values as they were when you pressed **Take snapshot**.
 * **Off**: no comparison.
 
-Changed rows are coloured: green for a number that went up, red for one that went down, orange for other changes, blue for new variables. Each shows its previous value, for example `was 200 (+50)`. Pinned variables show the same note in the Pins tab.
+Changed rows are coloured: green for a number that went up, red for one that went down, orange for other changes (including a flag being flipped), blue for new variables. Each shows its previous value, for example `was 200 (+50)` or `was False`. Pinned variables show the same note in the Pins tab.
 
 The **Show** buttons filter the list to Any, Changed, Unchanged, Up, or Down.
 
