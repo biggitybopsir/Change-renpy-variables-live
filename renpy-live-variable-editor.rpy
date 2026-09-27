@@ -32,12 +32,15 @@
 #   Lock settings are saved with the pin, but the master "Locks" switch starts
 #   OFF each launch (see _VB_LOCKS_START_ENABLED) so nothing is forced on you.
 #
-# NUMBERS ONLY (default)
-#   The Browse tab lists only int/float variables. Everything else is skipped
-#   while scanning (no repr is built for it), which keeps big games fast.
-#   Press "Types: Numbers" to switch to "Types: All" for strings, lists,
-#   objects, booleans, ... (slower). Set _VB_NUMBERS_ONLY_DEFAULT = False to
-#   start in All mode. Pins can be any type regardless of this setting.
+# TYPES (Browse tab)
+#   The "Types" button cycles between three views:
+#     Numbers          int/float variables only
+#     Numbers + flags  int/float plus True/False variables (default)
+#     All              everything: strings, lists, objects, ... (slower)
+#   Anything outside the chosen view is skipped while scanning (no repr is
+#   built for it), which keeps big games fast. Set _VB_TYPES_DEFAULT to
+#   "numbers", "flags" or "all" to change the starting view. Pins can be any
+#   type regardless of this setting.
 #
 # CHANGE TRACKING / SCANNING (Browse tab, like Cheat Engine's "next scan")
 #   "Compare to" picks a baseline:
@@ -136,10 +139,13 @@ init -999 python:
     _VB_MAX_VISIT_PER_ROOT = 2000 # deep-mode cap on nodes searched per top-level variable
     _VB_MAX_DEPTH = 2
 
-    # Show only int/float variables by default. Everything else (strings,
-    # lists, objects, ...) is skipped while scanning, which is far faster in
-    # big games. Toggle it with the "Types" button in the browser.
-    _VB_NUMBERS_ONLY_DEFAULT = True
+    # Which variables the Browse tab scans by default:
+    #   "numbers"  int/float only
+    #   "flags"    int/float plus True/False (default)
+    #   "all"      everything
+    # Anything outside the view is skipped while scanning, which is far
+    # faster in big games. Cycle it with the "Types" button in the browser.
+    _VB_TYPES_DEFAULT = "flags"
     _VB_MAX_REPR = 500            # display text length in the list
     _VB_MAX_EDIT = 20000          # values with a longer repr are read-only
 
@@ -191,10 +197,11 @@ init -999 python:
             self.candidates = None          # frozenset of paths, or None
             self.cand_version = 0
 
-            # Numbers-only view, and whether each baseline was recorded that way.
-            self.numbers_only = _VB_NUMBERS_ONLY_DEFAULT
-            self.snap_numbers = False
-            self.close_numbers = False
+            # Type view ("numbers", "flags" or "all"), and the view each
+            # baseline was recorded under.
+            self.type_mode = _VB_TYPES_DEFAULT
+            self.snap_mode = "all"
+            self.close_mode = "all"
 
     class _VBPin(_VBStateBase):
         # mode is "off", "exact", "min" (at least) or "max" (at most).
@@ -314,18 +321,28 @@ init -999 python:
     def _vb_is_number(value):
         return isinstance(value, _vb_number_types) and not isinstance(value, bool)
 
-    def _vb_walk(path, value, depth, rows, seen, start, numbers, counter):
+    def _vb_type_ok(value, mode):
+        # Is this value part of the given type view?
+        if mode == "all":
+            return True
+
+        if _vb_is_number(value):
+            return True
+
+        return mode == "flags" and isinstance(value, bool)
+
+    def _vb_walk(path, value, depth, rows, seen, start, mode, counter):
         # Children of an object already expanded elsewhere are only listed
-        # under the first path that reached it. In numbers-only mode only
-        # int/float values get a row, but containers are still searched.
+        # under the first path that reached it. Outside the "all" view only
+        # matching values get a row, but containers are still searched.
         # counter[0] counts nodes visited under the current root, so a huge
-        # structure without many numbers can't stall the scan.
+        # structure without many matches can't stall the scan.
         counter[0] += 1
 
         if counter[0] > _VB_MAX_VISIT_PER_ROOT:
             return
 
-        if not numbers or _vb_is_number(value):
+        if _vb_type_ok(value, mode):
             rows.append((
                 path,
                 _vb_safe_repr(value),
@@ -352,7 +369,7 @@ init -999 python:
                         break
 
                     child_path = "%s[%r]" % (path, key)
-                    _vb_walk(child_path, child, depth + 1, rows, seen, start, numbers, counter)
+                    _vb_walk(child_path, child, depth + 1, rows, seen, start, mode, counter)
 
             elif isinstance(value, (list, tuple)):
                 for i, child in enumerate(value[:250]):
@@ -360,7 +377,7 @@ init -999 python:
                         break
 
                     child_path = "%s[%d]" % (path, i)
-                    _vb_walk(child_path, child, depth + 1, rows, seen, start, numbers, counter)
+                    _vb_walk(child_path, child, depth + 1, rows, seen, start, mode, counter)
 
             else:
                 attrs = vars(value)
@@ -381,7 +398,7 @@ init -999 python:
                         continue
 
                     child_path = "%s.%s" % (path, key)
-                    _vb_walk(child_path, child, depth + 1, rows, seen, start, numbers, counter)
+                    _vb_walk(child_path, child, depth + 1, rows, seen, start, mode, counter)
 
         except Exception:
             return
@@ -389,8 +406,8 @@ init -999 python:
     def _vb_build_rows(scope="all", deep=False):
         # Cache the expensive scan. Ren'Py re-evaluates screens frequently,
         # so rebuilding the variable tree on every interaction is very slow.
-        numbers = _vb_state.numbers_only
-        cache_key = (scope, bool(deep), numbers)
+        mode = _vb_state.type_mode
+        cache_key = (scope, bool(deep), mode)
         cached = _vb_state.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -400,12 +417,12 @@ init -999 python:
 
         def add_root(path, value):
             # Every root always gets its own row; deep mode only limits how
-            # much is expanded underneath it. In numbers-only mode non-number
-            # values are skipped before any repr is built, which is what makes
+            # much is expanded underneath it. Values outside the type view
+            # are skipped before any repr is built, which is what makes
             # large games fast.
             if deep and len(rows) < _VB_MAX_SCAN_ROWS:
-                _vb_walk(path, value, 0, rows, seen, len(rows), numbers, [0])
-            elif not numbers or _vb_is_number(value):
+                _vb_walk(path, value, 0, rows, seen, len(rows), mode, [0])
+            elif _vb_type_ok(value, mode):
                 rows.append((path, _vb_safe_repr(value), type(value).__name__))
 
         if scope in ("all", "store"):
@@ -447,7 +464,7 @@ init -999 python:
         if q or filt != "any" or cands is not None:
             key = (
                 scope, bool(deep), q, filt, cands is not None,
-                _vb_state.numbers_only,
+                _vb_state.type_mode,
                 _vb_state.compare_mode, _vb_state.snap_version,
                 _vb_state.close_version, _vb_state.cand_version,
             )
@@ -529,24 +546,24 @@ init -999 python:
 
     def _vb_get_baseline():
         # Returns (snapshot or None, name, version, snapshot was deep,
-        # snapshot only recorded numbers).
+        # type view the snapshot was recorded under).
         mode = _vb_state.compare_mode
 
         if mode == "snap":
             return (_vb_state.snap, "snap", _vb_state.snap_version,
-                    _vb_state.snap_deep, _vb_state.snap_numbers)
+                    _vb_state.snap_deep, _vb_state.snap_mode)
 
         if mode == "close":
             return (_vb_state.close_snap, "close", _vb_state.close_version,
-                    False, _vb_state.close_numbers)
+                    False, _vb_state.close_mode)
 
-        return None, "off", 0, False, False
+        return None, "off", 0, False, "all"
 
     def _vb_has_baseline():
         base = _vb_get_baseline()[0]
         return base is not None and len(base) > 0
 
-    def _vb_compute_diff(base, base_deep, base_numbers, scope, deep):
+    def _vb_compute_diff(base, base_deep, base_mode, scope, deep):
         result = collections.OrderedDict()
         namespace = vars(renpy.store)
 
@@ -560,10 +577,10 @@ init -999 python:
 
             if old is None:
                 # A value missing from the baseline may just not have been
-                # recorded (nested value in a shallow baseline, or a
-                # non-number in a numbers-only one). Only report variables
-                # that really are new.
-                if base_numbers and not _vb_is_number(value):
+                # recorded (nested value in a shallow baseline, or a type the
+                # baseline's view didn't cover). Only report variables that
+                # really are new.
+                if not _vb_type_ok(value, base_mode):
                     continue
 
                 if base_deep or _vb_is_root_path(path):
@@ -578,16 +595,16 @@ init -999 python:
     def _vb_get_diff(scope, deep):
         # path -> (kind, tag) for the rows in this view, against the current
         # baseline. Empty if there is no baseline.
-        base, name, version, base_deep, base_numbers = _vb_get_baseline()
+        base, name, version, base_deep, base_mode = _vb_get_baseline()
 
         if not base:
             return collections.OrderedDict()
 
-        key = (name, version, scope, bool(deep), _vb_state.numbers_only)
+        key = (name, version, scope, bool(deep), _vb_state.type_mode)
         diff = _vb_state.diff_cache.get(key)
 
         if diff is None:
-            diff = _vb_compute_diff(base, base_deep, base_numbers, scope, deep)
+            diff = _vb_compute_diff(base, base_deep, base_mode, scope, deep)
 
             if len(_vb_state.diff_cache) > 8:
                 _vb_state.diff_cache.clear()
@@ -663,7 +680,7 @@ init -999 python:
             snap = _vb_capture(bool(deep))
             _vb_state.snap = snap
             _vb_state.snap_deep = bool(deep)
-            _vb_state.snap_numbers = _vb_state.numbers_only
+            _vb_state.snap_mode = _vb_state.type_mode
             _vb_state.snap_version += 1
             _vb_state.compare_mode = "snap"
             _vb_clear_cache()
@@ -684,7 +701,7 @@ init -999 python:
 
         try:
             _vb_state.close_snap = _vb_capture(False)
-            _vb_state.close_numbers = _vb_state.numbers_only
+            _vb_state.close_mode = _vb_state.type_mode
             _vb_state.close_version += 1
             _vb_clear_cache()
         except Exception:
@@ -698,9 +715,31 @@ init -999 python:
         _vb_state.diff_filter = filt
         renpy.restart_interaction()
 
-    def _vb_set_numbers_only(flag):
-        _vb_state.numbers_only = bool(flag)
+    def _vb_cycle_types():
+        # numbers -> flags -> all -> numbers
+        order = ["numbers", "flags", "all"]
+        current = _vb_state.type_mode
+        index = order.index(current) if current in order else 1
+        _vb_state.type_mode = order[(index + 1) % len(order)]
         renpy.restart_interaction()
+
+    def _vb_types_label():
+        return {
+            "numbers": "Types: Numbers",
+            "flags": "Types: Numbers + flags",
+            "all": "Types: All",
+        }.get(_vb_state.type_mode, "Types: All")
+
+    def _vb_types_hint():
+        mode = _vb_state.type_mode
+
+        if mode == "numbers":
+            return "Numbers only (int/float). Cycle Types to add True/False flags, or All (slower)."
+
+        if mode == "flags":
+            return "Numbers and True/False flags. Cycle Types for numbers only, or All (slower)."
+
+        return ""
 
     def _vb_narrow(query, scope, deep):
         # Next scan: keep only the rows currently matching (search + Show
@@ -1531,17 +1570,13 @@ screen variable_browser():
                             text_style "vb_button_text"
                             action SetScreenVariable("vb_deep", True)
 
-                    if _vb_state.numbers_only:
-                        textbutton "Types: Numbers":
-                            style "vb_button"
-                            text_style "vb_button_text"
-                            selected True
-                            action Function(_vb_set_numbers_only, False)
-                    else:
-                        textbutton "Types: All":
-                            style "vb_button"
-                            text_style "vb_button_text"
-                            action Function(_vb_set_numbers_only, True)
+                    $ vb_types_label = _vb_types_label()
+
+                    textbutton "[vb_types_label]":
+                        style "vb_button"
+                        text_style "vb_button_text"
+                        selected _vb_state.type_mode != "all"
+                        action Function(_vb_cycle_types)
 
                 textbutton "Refresh":
                     style "vb_button"
@@ -1650,8 +1685,10 @@ screen variable_browser():
                     else:
                         text "[vb_total] rows.   * = pinned." size 16 yalign 0.5
 
-                    if _vb_state.numbers_only:
-                        text "Numbers only (int/float). Switch Types to All to see strings, lists, objects, ... (slower)." size 16 yalign 0.5 color "#9cccff"
+                    $ vb_types_hint = _vb_types_hint()
+
+                    if vb_types_hint:
+                        text "[vb_types_hint!q]" size 16 yalign 0.5 color "#9cccff"
 
                     if vb_cands is not None:
                         text "Narrowed to [vb_cand_count] candidate variables." size 16 color "#9cccff"
